@@ -1,0 +1,47 @@
+Feature: Bulk Delete # features/bulkDelete.feature:1
+
+  Scenario: Bulk delete                                                                                                                                                            # features/bulkDelete.feature:3
+    Given an orm is setup                                                                                                                                                          # features/steps/steps.py:223
+    Given ModelList1 is created and inserted into the database                                                                                                                     # features/steps/steps.py:230
+    When bulk delete is executed on model named ModelA with ids "edf73dba-216a-4e10-a38f-398a4b38350a, 2c3e6547-2d6b-44c3-ad2c-1220a3d305be, ed1dc8ff-fdc5-401c-a229-8566a418ceb5" # features/steps/steps.py:303
+    And search named EmptySearch is executed on model named ModelA                                                                                                                 # features/steps/steps.py:271
+    Then 7 instances are found                                                                                                                                                     # features/steps/steps.py:296
+
+Feature: Search Features # features/search.feature:1
+
+  Scenario: A "find all" empty property search                      # features/search.feature:3
+    Given an orm is setup                                           # features/steps/steps.py:223
+    Given ModelList1 is created and inserted into the database      # features/steps/steps.py:230
+    When search named EmptySearch is executed on model named ModelA # features/steps/steps.py:271
+    Then 10 instances are found                                     # features/steps/steps.py:296
+
+  Scenario: A property search with ors                                   # features/search.feature:9
+    Given an orm is setup                                                # features/steps/steps.py:223
+    Given ModelList1 is created and inserted into the database           # features/steps/steps.py:230
+    When search named OrPropertySearch is executed on model named ModelA # features/steps/steps.py:271
+    Then 3 instances are found                                           # features/steps/steps.py:296
+
+  Scenario: Text starts with search                                                  # features/search.feature:15
+    Given an orm is setup                                                            # features/steps/steps.py:223
+    Given ModelList1 is created and inserted into the database                       # features/steps/steps.py:230
+    When search named TextStartsWithPropertySearch is executed on model named ModelA # features/steps/steps.py:271
+    Then 2 instances are found                                                       # features/steps/steps.py:296
+
+  Scenario: Datetime span search                                       # features/search.feature:21
+    Given an orm is setup                                              # features/steps/steps.py:223
+    Given ModelList1 is created and inserted into the database         # features/steps/steps.py:230
+    When search named DateSpanSearch is executed on model named ModelA # features/steps/steps.py:271
+    Then 2 instances are found                                         # features/steps/steps.py:296
+
+  Scenario: Date span search                                            # features/search.feature:27
+    Given an orm is setup                                               # features/steps/steps.py:223
+    Given ModelList3 is created and inserted into the database          # features/steps/steps.py:230
+    When search named DateSpanSearch3 is executed on model named ModelC # features/steps/steps.py:271
+    Then 2 instances are found                                          # features/steps/steps.py:296
+
+  Scenario: Datetime span search with string dates                      # features/search.feature:33
+    Given an orm is setup                                               # features/steps/steps.py:223
+    Given ModelList2 is created and inserted into the database          # features/steps/steps.py:230
+    When search named DateSpanSearch2 is executed on model named ModelB # features/steps/steps.py:271
+    Then 2 instances are found                                          # features/steps/steps.py:296
+
