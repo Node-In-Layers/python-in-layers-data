@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 
+from in_layers.core.protocols import ErrorDetails, ErrorObject
 from in_layers.core.models.protocols import ModelDefinition
 from in_layers.data.backends.dynamodb.libs import (
     build_scan_params,
@@ -29,28 +31,28 @@ class TestGetTableNameForModel:
     def test_should_return_kebab_case_for_camel_case(self):
         """Should return kebab-case for camelCase input."""
         model_def = _StubModelDefinition("MyTable")
-        actual = get_table_name_for_model(model_def)
-        expected = "my-table"
+        actual = get_table_name_for_model("test", model_def)
+        expected = "my-table-test"
         assert actual == expected
 
     def test_should_return_kebab_case_for_pascal_case(self):
         """Should return kebab-case for PascalCase input."""
         model_def = _StubModelDefinition("MyPluralNames")
-        actual = get_table_name_for_model(model_def)
-        expected = "my-plural-names"
+        actual = get_table_name_for_model("test", model_def)
+        expected = "my-plural-names-test"
         assert actual == expected
 
     def test_should_return_lowercase_for_already_kebab_case(self):
         """Should return lowercase for already kebab-case input."""
         model_def = _StubModelDefinition("my-table")
-        actual = get_table_name_for_model(model_def)
-        expected = "my-table"
+        actual = get_table_name_for_model("test", model_def)
+        expected = "my-table-test"
         assert actual == expected
 
     def test_should_handle_underscores(self):
         """Should handle underscores in names."""
         model_def = _StubModelDefinition("My_Table")
-        actual = get_table_name_for_model(model_def)
+        actual = get_table_name_for_model("test", model_def)
         # Underscores should be preserved, then converted
         assert "my" in actual.lower()
         assert "table" in actual.lower()
@@ -58,15 +60,15 @@ class TestGetTableNameForModel:
     def test_should_remove_at_symbols(self):
         """Should remove @ symbols from names."""
         model_def = _StubModelDefinition("@My@Model@")
-        actual = get_table_name_for_model(model_def)
-        expected = "my-model"
+        actual = get_table_name_for_model("test", model_def)
+        expected = "my-model-test"
         assert actual == expected
 
     def test_should_replace_slashes(self):
         """Should replace / with - in names."""
         model_def = _StubModelDefinition("My/Model/Name")
-        actual = get_table_name_for_model(model_def)
-        expected = "my-model-name"
+        actual = get_table_name_for_model("test", model_def)
+        expected = "my-model-name-test"
         assert actual == expected
 
 
@@ -134,10 +136,14 @@ class TestFormatForDynamodb:
         assert actual["name"] == "test"
 
     def test_should_preserve_non_datetime_values(self):
-        """Should preserve non-datetime values."""
+        """Should preserve non-datetime values (normalizing floats to Decimal)."""
         data = {"name": "test", "age": 25, "active": True, "score": 98.5}
         actual = format_for_dynamodb(data)
-        assert actual == data
+        assert actual["name"] == "test"
+        assert actual["age"] == 25
+        assert actual["active"] is True
+        assert isinstance(actual["score"], Decimal)
+        assert actual["score"] == Decimal("98.5")
 
     def test_should_handle_none_values(self):
         """Should handle None values."""
@@ -151,6 +157,32 @@ class TestFormatForDynamodb:
         data = {}
         actual = format_for_dynamodb(data)
         assert actual == {}
+
+    def test_should_convert_error_object_to_plain_dict(self):
+        """Should convert ErrorObject dataclasses into plain nested dictionaries."""
+        cause = ErrorDetails(
+            code="CAUSE_CODE",
+            message="Cause message",
+        )
+        error_details = ErrorDetails(
+            code="ERR_CODE",
+            message="Top level message",
+            cause=cause,
+        )
+        data = {"id": "123", "error": error_details}
+
+        actual = format_for_dynamodb(data)
+
+        # Top-level remains a dict
+        assert isinstance(actual, dict)
+        # Error field should be a plain dict, not a dataclass instance
+        assert isinstance(actual["error"], dict)
+        assert actual["error"]["code"] == "ERR_CODE"
+        assert actual["error"]["message"] == "Top level message"
+        # Nested cause should also be a plain dict
+        assert isinstance(actual["error"]["cause"], dict)
+        assert actual["error"]["cause"]["code"] == "CAUSE_CODE"
+        assert actual["error"]["cause"]["message"] == "Cause message"
 
 
 class TestFromDynamodb:

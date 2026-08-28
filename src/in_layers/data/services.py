@@ -1,5 +1,6 @@
-from typing import Protocol
+from typing import Any, Protocol
 
+from in_layers.core import create_error_object
 from in_layers.core.models.protocols import BackendProtocol, ModelDefinition
 
 from .backends.dynamodb.services import DynamoDBBackend
@@ -13,6 +14,7 @@ from .protocols import (
 
 class _ExpectedContext(Protocol):
     config: WithInLayersDataConfig
+    log: Any
 
 
 class InLayersDataServices:
@@ -22,18 +24,21 @@ class InLayersDataServices:
         self.__backends = None
 
     def __initialize_backend(self, config: BackendConfig) -> BackendProtocol:
-        if config.type == SupportedBackend.MongoDB:
+        if config.type in [SupportedBackend.MongoDB, SupportedBackend.MongoDB.value]:
             unique = MongoBackend.create_unique_connection_string(config)
             if unique in self.__backend_by_unique_key:
                 return self.__backend_by_unique_key[unique]
-            backend = MongoBackend(config)
+            backend = MongoBackend(self.__context, config)
             self.__backend_by_unique_key[unique] = backend
             return backend
-        elif config.type == SupportedBackend.DynamoDB:
+        elif config.type in [
+            SupportedBackend.DynamoDB,
+            SupportedBackend.DynamoDB.value,
+        ]:
             unique = DynamoDBBackend.create_unique_connection_string(config)
             if unique in self.__backend_by_unique_key:
                 return self.__backend_by_unique_key[unique]
-            backend = DynamoDBBackend(config)
+            backend = DynamoDBBackend(self.__context, config)
             self.__backend_by_unique_key[unique] = backend
             return backend
         else:
@@ -42,7 +47,7 @@ class InLayersDataServices:
     def __initialize_backends(self):
         if self.__backends is not None:
             return
-        config = self.__context.config.simple_models
+        config = self.__context.config.in_layers_data
         default_backend_config = config.default
         model_to_backend_config = getattr(config, "model_to_backend", {}) or {}
 
@@ -67,6 +72,20 @@ class InLayersDataServices:
                 f"No backend found for model {model_definition.domain}.{model_definition.plural_name}"
             )
         return backend
+
+    def dispose(self):
+        for backend in (self.__backends or {}).values():
+            try:
+                backend.dispose()
+            except Exception as e:
+                error_obj = create_error_object(
+                    "DATA_SERVICES_DISPOSE_ERROR", "Error disposing backend", e
+                )
+                log = self.__context.log.get_inner_logger("dispose")
+                log.warn("Error disposing backend", error_obj)
+
+        self.__backends = None
+        self.__backend_by_unique_key = {}
 
 
 def create(context: _ExpectedContext) -> InLayersDataServices:

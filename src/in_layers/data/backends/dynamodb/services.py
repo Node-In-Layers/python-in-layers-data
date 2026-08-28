@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
+from botocore.exceptions import ClientError
 from box import Box
 from in_layers.core.models.backends import (
     _apply_sort,
@@ -32,11 +33,19 @@ from .libs import (
 MAX_BATCH_WRITE_SIZE = 25
 SCAN_RETURN_THRESHOLD = 1000
 
+# Error code when table or requested resource does not exist
+_RESOURCE_NOT_FOUND = "ResourceNotFoundException"
+
+
+def _is_resource_not_found(e: ClientError) -> bool:
+    return e.response.get("Error", {}).get("Code") == _RESOURCE_NOT_FOUND
+
 
 class DynamoDBBackend:
     """DynamoDB backend implementation."""
 
-    def __init__(self, config: DynamoDBBackendConfig):
+    def __init__(self, context, config: DynamoDBBackendConfig):
+        self.__context = context
         self.__config = config
         self.__client: Any = None
         self.__table_client: Any = None
@@ -53,23 +62,32 @@ class DynamoDBBackend:
 
         return "|".join(parts)
 
+    def __get_config_value(self, key: str, default_value: Any = None) -> Any:
+        if key in self.__config:
+            return self.__config[key]
+        return default_value
+
     def __connect(self) -> None:
         """Connect to DynamoDB (private method)."""
         # Use boto3 from config if provided (for testing), otherwise import it
-        if self.__config.boto3 is not None:
-            boto3 = self.__config.boto3
+        if self.__get_config_value("boto3") is not None:
+            boto3 = self.__get_config_value("boto3")
         else:
             import boto3  # pragma: no cover # noqa: PLC0415
 
-        # Build client configuration
+        region = self.__get_config_value("region")
+        endpoint_url = self.__get_config_value("endpoint_url")
+        aws_access_key_id = self.__get_config_value("aws_access_key_id")
+        aws_secret_access_key = self.__get_config_value("aws_secret_access_key")
         client_kwargs: dict[str, Any] = {}
-        if self.__config.region:
-            client_kwargs["region_name"] = self.__config.region
-        if self.__config.endpoint_url:
-            client_kwargs["endpoint_url"] = self.__config.endpoint_url
-        if self.__config.aws_access_key_id and self.__config.aws_secret_access_key:
-            client_kwargs["aws_access_key_id"] = self.__config.aws_access_key_id
-            client_kwargs["aws_secret_access_key"] = self.__config.aws_secret_access_key
+        if region:
+            client_kwargs["region_name"] = region
+        if endpoint_url:
+            client_kwargs["endpoint_url"] = endpoint_url
+        if aws_access_key_id:
+            client_kwargs["aws_access_key_id"] = aws_access_key_id
+        if aws_secret_access_key:
+            client_kwargs["aws_secret_access_key"] = aws_secret_access_key
 
         # Create DynamoDB client
         self.__client = boto3.client("dynamodb", **client_kwargs)
@@ -89,11 +107,20 @@ class DynamoDBBackend:
         if self.__client is None:
             self.__connect()
 
+    def get_raw_client(self) -> Any:
+        self.__ensure_connected()
+        return self.__table_client
+
+    def get_backend_name(self) -> str:
+        return "dynamodb"
+
     def create(self, model: InLayersModel, data: Mapping) -> Mapping:
         """Create a new item in DynamoDB."""
         self.__ensure_connected()
 
-        table_name = get_table_name_for_model(model.get_model_definition())
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
         table = self.__table_client.Table(table_name)
 
         payload = dict(data)
@@ -113,16 +140,24 @@ class DynamoDBBackend:
         return formatted
 
     def retrieve(self, model: InLayersModel, id: PrimaryKeyType) -> Mapping | None:
-        """Retrieve an item by ID."""
+        """Retrieve an item by ID. Returns empty dict if table or item is not found."""
         self.__ensure_connected()
 
-        table_name = get_table_name_for_model(model.get_model_definition())
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
         table = self.__table_client.Table(table_name)
 
         pk_name = model.get_primary_key_name()
         key = {pk_name: str(id)}
 
-        response = table.get_item(Key=key)
+        try:
+            response = table.get_item(Key=key)
+        except ClientError as e:
+            if _is_resource_not_found(e):
+                return None
+            raise
+
         item = response.get("Item")
         if not item:
             return None
@@ -132,17 +167,29 @@ class DynamoDBBackend:
     def update(
         self, model: InLayersModel, id: PrimaryKeyType, data: Mapping
     ) -> Mapping:
-        """Update an item by ID."""
+        """Update an item by ID.
+
+        Supports partial updates - only the fields provided in data will be updated.
+        Returns the full merged object (original + updates).
+        """
         self.__ensure_connected()
 
-        table_name = get_table_name_for_model(model.get_model_definition())
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
         table = self.__table_client.Table(table_name)
 
         pk_name = model.get_primary_key_name()
         key = {pk_name: str(id)}
 
         # Check if item exists
-        existing = table.get_item(Key=key)
+        try:
+            existing = table.get_item(Key=key)
+        except ClientError as e:
+            if _is_resource_not_found(e):
+                raise KeyError(f"Instance with id {id!r} not found") from e
+            raise
+
         if "Item" not in existing:
             raise KeyError(f"Instance with id {id!r} not found")
 
@@ -152,21 +199,72 @@ class DynamoDBBackend:
         # Ensure primary key field remains consistent
         formatted[pk_name] = str(id)
 
-        # Update item in DynamoDB
-        table.put_item(Item=formatted)
-        return formatted
+        # Build UpdateExpression for partial update
+        # DynamoDB requires SET expressions for each attribute
+        update_expressions = []
+        expression_attribute_names = {}
+        expression_attribute_values = {}
+
+        for attr_name, attr_value in formatted.items():
+            # Skip the primary key as it's in the Key parameter
+            if attr_name == pk_name:
+                continue
+
+            # Use attribute name placeholders to handle reserved words
+            name_placeholder = f"#attr_{attr_name}"
+            value_placeholder = f":val_{attr_name}"
+
+            expression_attribute_names[name_placeholder] = attr_name
+            expression_attribute_values[value_placeholder] = attr_value
+            update_expressions.append(f"{name_placeholder} = {value_placeholder}")
+
+        if not update_expressions:
+            # No fields to update (only primary key was provided)
+            # Just return the existing item
+            return from_dynamodb(existing["Item"])
+
+        # Build the update expression
+        update_expression = f"SET {', '.join(update_expressions)}"
+
+        # Perform partial update using update_item
+        table.update_item(
+            Key=key,
+            UpdateExpression=update_expression,
+            ExpressionAttributeNames=expression_attribute_names,
+            ExpressionAttributeValues=expression_attribute_values,
+        )
+
+        # Retrieve the updated item to return the full merged object
+        try:
+            updated = table.get_item(Key=key)
+        except ClientError as e:
+            if _is_resource_not_found(e):
+                raise KeyError(f"Instance with id {id!r} not found after update") from e
+            raise
+
+        if "Item" not in updated:
+            raise KeyError(f"Instance with id {id!r} not found after update")
+
+        return from_dynamodb(updated["Item"])
 
     def delete(self, model: InLayersModel, id: PrimaryKeyType) -> None:
-        """Delete an item by ID."""
+        """Delete an item by ID. No-op if table or item does not exist."""
         self.__ensure_connected()
 
-        table_name = get_table_name_for_model(model.get_model_definition())
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
         table = self.__table_client.Table(table_name)
 
         pk_name = model.get_primary_key_name()
         key = {pk_name: str(id)}
 
-        table.delete_item(Key=key)
+        try:
+            table.delete_item(Key=key)
+        except ClientError as e:
+            if _is_resource_not_found(e):
+                return
+            raise
 
     def search(self, model: InLayersModel, query: ModelSearch) -> ModelSearchResult:
         """Search for items matching the query.
@@ -182,20 +280,27 @@ class DynamoDBBackend:
         """
         self.__ensure_connected()
 
-        table_name = get_table_name_for_model(model.get_model_definition())
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
         table = self.__table_client.Table(table_name)
 
-        # Start recursive scanning
-        result = self._do_search_until_threshold_or_no_last_evaluated_key(
-            table, query, []
-        )
+        # Start recursive scanning; return empty result if table does not exist
+        try:
+            result = self._do_search_until_threshold_or_no_last_evaluated_key(
+                table, query, []
+            )
+        except ClientError as e:
+            if _is_resource_not_found(e):
+                return Box(instances=[], page=None)
+            raise
 
         return Box(instances=result["instances"], page=result["page"])
 
     def _do_search_until_threshold_or_no_last_evaluated_key(
         self,
         table: Any,
-        query: ModelSearch,
+        search: ModelSearch,
         old_instances_found: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Recursively scan DynamoDB until threshold is met or no more keys.
@@ -205,8 +310,12 @@ class DynamoDBBackend:
         """
         # Build scan parameters
         scan_kwargs: dict[str, Any] = {}
-        if query.page:
-            scan_kwargs["ExclusiveStartKey"] = query.page
+        # Ensure query is always a list (handle None case)
+        query = getattr(search, "query", []) or []
+        take = getattr(search, "take", None)
+        sort = getattr(search, "sort", None)
+        if getattr(search, "page", None):
+            scan_kwargs["ExclusiveStartKey"] = search.page
 
         # Execute scan
         response = table.scan(**scan_kwargs)
@@ -216,14 +325,14 @@ class DynamoDBBackend:
         unfiltered = [from_dynamodb(item) for item in items]
 
         # Apply filtering using the same logic as MemoryBackend
-        filtered = [r for r in unfiltered if _matches_query_tokens(r, query.query)]
+        filtered = [r for r in unfiltered if _matches_query_tokens(r, query)]
 
         # Combine with previously found instances
         all_filtered = filtered + old_instances_found
 
         # Determine threshold
-        using_take = query.take is not None and query.take > 0
-        take = query.take if using_take else SCAN_RETURN_THRESHOLD
+        using_take = take is not None and take > 0
+        threshold = take if using_take else SCAN_RETURN_THRESHOLD
 
         # Get pagination key
         last_evaluated_key = response.get("LastEvaluatedKey")
@@ -231,15 +340,15 @@ class DynamoDBBackend:
         # Check stopping conditions:
         # 1. We have enough results (more than threshold)
         # 2. No more keys to evaluate
-        # 3. If using take, we've hit our max
-        # Note: TypeScript uses > (strictly greater), meaning we continue if we have exactly 'take' items
-        stop_for_threshold = len(all_filtered) > take
+        # Note: TypeScript uses > (strictly greater), meaning we continue if we have exactly 'threshold' items
+        stop_for_threshold = len(all_filtered) > threshold
         stop_for_no_more = last_evaluated_key is None
 
         if stop_for_threshold or stop_for_no_more:
             # Apply sorting and take limit
-            sorted_instances = _apply_sort(all_filtered, query.sort)
-            limited_instances = _apply_take(sorted_instances, query.take)
+            sorted_instances = _apply_sort(all_filtered, sort)
+            # Apply take limit (use original take value, not threshold)
+            limited_instances = _apply_take(sorted_instances, take)
 
             # Return page: null when using take, otherwise return LastEvaluatedKey
             page = None if using_take else last_evaluated_key
@@ -252,9 +361,9 @@ class DynamoDBBackend:
         # Continue scanning with the new page key
         # Create a new ModelSearch with updated page (frozen dataclass requires new instance)
         new_query = ModelSearch(
-            query=query.query,
-            take=query.take,
-            sort=query.sort,
+            query=query,
+            take=take,
+            sort=sort,
             page=last_evaluated_key,
         )
         return self._do_search_until_threshold_or_no_last_evaluated_key(
@@ -265,7 +374,9 @@ class DynamoDBBackend:
         """Bulk insert items."""
         self.__ensure_connected()
 
-        table_name = get_table_name_for_model(model.get_model_definition())
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
         table = self.__table_client.Table(table_name)
         pk_name = model.get_primary_key_name()
 
@@ -294,10 +405,12 @@ class DynamoDBBackend:
                     writer.put_item(Item=item)
 
     def bulk_delete(self, model: InLayersModel, ids: list[PrimaryKeyType]) -> None:
-        """Bulk delete items by IDs."""
+        """Bulk delete items by IDs. No-op if table does not exist."""
         self.__ensure_connected()
 
-        table_name = get_table_name_for_model(model.get_model_definition())
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
         table = self.__table_client.Table(table_name)
         pk_name = model.get_primary_key_name()
 
@@ -307,11 +420,16 @@ class DynamoDBBackend:
         # Split into batches
         batches = split_array_into_batches(keys, MAX_BATCH_WRITE_SIZE)
 
-        # Delete batches
-        for batch in batches:
-            with table.batch_writer() as writer:
-                for key in batch:
-                    writer.delete_item(Key=key)
+        # Delete batches; tolerate missing table
+        try:
+            for batch in batches:
+                with table.batch_writer() as writer:
+                    for key in batch:
+                        writer.delete_item(Key=key)
+        except ClientError as e:
+            if _is_resource_not_found(e):
+                return
+            raise
 
     def dispose(self) -> None:
         """Clean up resources."""

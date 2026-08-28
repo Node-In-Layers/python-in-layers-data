@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from in_layers.core.models.protocols import (
@@ -24,7 +25,7 @@ def get_collection_name_for_model(model_definition: ModelDefinition) -> str:
     # and handle sequences of uppercase letters
     name = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", name)
     name = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1-\2", name)
-    return name.lower()
+    return f"{name}".lower()
 
 
 def escape_regex(s: str) -> str:
@@ -216,8 +217,26 @@ def to_mongo(query: list[QueryTokens]) -> list[dict[str, Any]]:
     return [{"$match": match_query}]
 
 
+def convert_decimals_to_float(value: Any) -> Any:
+    """Recursively convert Decimal values to float for MongoDB serialization.
+
+    MongoDB cannot serialize Decimal objects, so we need to convert them to float.
+    This function walks through nested structures (dicts, lists, etc.) and converts
+    any Decimal values it finds.
+    """
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: convert_decimals_to_float(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [convert_decimals_to_float(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(convert_decimals_to_float(item) for item in value)
+    return value
+
+
 def format_for_mongo(data: Mapping[str, Any]) -> dict[str, Any]:
-    """Format data for MongoDB storage, converting dates and other types."""
+    """Format data for MongoDB storage, converting dates, decimals, and other types."""
     result = dict(data)
     # Convert datetime objects (they're already in the right format for MongoDB)
     # In the TypeScript version, this iterates over model properties to find Datetime types
@@ -226,4 +245,7 @@ def format_for_mongo(data: Mapping[str, Any]) -> dict[str, Any]:
     for key, value in result.items():
         if isinstance(value, datetime):
             result[key] = value
+        else:
+            # Convert any Decimal values to float (recursively)
+            result[key] = convert_decimals_to_float(value)
     return result

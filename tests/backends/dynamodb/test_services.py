@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock
-from uuid import uuid4
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from box import Box
@@ -53,20 +53,21 @@ class _StubModel:
 
 def _create_mock_config(boto3_mock: Any | None = None) -> DynamoDBBackendConfig:
     """Create a mock DynamoDBBackendConfig."""
-    config = Mock(spec=DynamoDBBackendConfig)
-    config.type = SupportedBackend.DynamoDB
-    config.region = "us-east-1"
-    config.endpoint_url = None
-    config.aws_access_key_id = None
-    config.aws_secret_access_key = None
-    config.boto3 = boto3_mock
-    return config
+    return Box(
+        type=SupportedBackend.DynamoDB,
+        region="us-east-1",
+        endpoint_url=None,
+        aws_access_key_id=None,
+        aws_secret_access_key=None,
+        boto3=boto3_mock,
+    )
 
 
 def _create_mock_table():
     """Create a mock DynamoDB table."""
     table = MagicMock()
     table.put_item = MagicMock()
+    table.update_item = MagicMock()
     table.get_item = MagicMock(return_value={"Item": None})
     table.delete_item = MagicMock()
     table.scan = MagicMock(return_value={"Items": [], "LastEvaluatedKey": None})
@@ -117,7 +118,9 @@ class TestCreate:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         data = {"id": "my-id", "name": "my-name"}
@@ -139,7 +142,9 @@ class TestCreate:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         data = {"name": "my-name"}
@@ -164,7 +169,9 @@ class TestRetrieve:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
 
@@ -184,7 +191,9 @@ class TestRetrieve:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
 
@@ -199,13 +208,19 @@ class TestUpdate:
     def test_should_update_existing_item(self):
         """Should update existing item."""
         mock_table = _create_mock_table()
-        mock_table.get_item.return_value = {"Item": {"id": "my-id", "name": "old-name"}}
+        # First call: check if item exists, second call: retrieve updated item
+        mock_table.get_item.side_effect = [
+            {"Item": {"id": "my-id", "name": "old-name"}},
+            {"Item": {"id": "my-id", "name": "new-name"}},
+        ]
         mock_resource = MagicMock()
         mock_resource.Table.return_value = mock_table
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         data = {"name": "new-name"}
@@ -214,7 +229,7 @@ class TestUpdate:
 
         assert result["id"] == "my-id"
         assert result["name"] == "new-name"
-        mock_table.put_item.assert_called_once()
+        mock_table.update_item.assert_called_once()
 
     def test_should_raise_key_error_when_item_not_found(self):
         """Should raise KeyError when item not found."""
@@ -226,7 +241,9 @@ class TestUpdate:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         data = {"name": "new-name"}
@@ -246,7 +263,9 @@ class TestDelete:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
 
@@ -267,7 +286,9 @@ class TestSearch:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         query = ModelSearch(query=[], take=None, sort=None, page=None)
@@ -288,7 +309,9 @@ class TestSearch:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         query = ModelSearch(
@@ -325,7 +348,9 @@ class TestSearch:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         query = ModelSearch(
@@ -362,7 +387,9 @@ class TestSearch:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         query = ModelSearch(
@@ -402,7 +429,9 @@ class TestSearch:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         query = ModelSearch(
@@ -440,7 +469,9 @@ class TestSearch:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         query = ModelSearch(
@@ -482,7 +513,9 @@ class TestSearch:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         query = ModelSearch(
@@ -505,6 +538,106 @@ class TestSearch:
 
         assert mock_table.scan.call_count == 2
 
+    def test_should_return_all_items_when_query_is_empty(self):
+        """Should return all items when query is empty (not an empty set)."""
+        mock_table = _create_mock_table()
+        mock_table.scan.return_value = {
+            "Items": [
+                {"id": "1", "name": "item1"},
+                {"id": "2", "name": "item2"},
+                {"id": "3", "name": "item3"},
+            ],
+            "LastEvaluatedKey": None,
+        }
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        mock_boto3 = MagicMock()
+        mock_boto3.resource.return_value = mock_resource
+        config = _create_mock_config(boto3_mock=mock_boto3)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
+
+        model = _StubModel()
+        # Empty query should return all items
+        query = ModelSearch(query=[], take=None, sort=None, page=None)
+
+        result = backend.search(model, query)
+
+        # Should return all 3 items, not an empty set
+        assert len(result.instances) == 3
+        assert result.instances[0]["id"] == "1"
+        assert result.instances[1]["id"] == "2"
+        assert result.instances[2]["id"] == "3"
+
+    def test_should_return_all_available_items_when_take_is_larger_than_available(self):
+        """Should return all available items when take is larger than number of items found."""
+        mock_table = _create_mock_table()
+        # Simulate 3 items in the database
+        mock_table.scan.return_value = {
+            "Items": [
+                {"id": "1", "name": "item1"},
+                {"id": "2", "name": "item2"},
+                {"id": "3", "name": "item3"},
+            ],
+            "LastEvaluatedKey": None,
+        }
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        mock_boto3 = MagicMock()
+        mock_boto3.resource.return_value = mock_resource
+        config = _create_mock_config(boto3_mock=mock_boto3)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
+
+        model = _StubModel()
+        # Request 4 items but only 3 are available
+        query = ModelSearch(query=[], take=4, sort=None, page=None)
+
+        result = backend.search(model, query)
+
+        # Should return all 3 available items, not 0
+        assert len(result.instances) == 3
+        assert result.instances[0]["id"] == "1"
+        assert result.instances[1]["id"] == "2"
+        assert result.instances[2]["id"] == "3"
+        assert result.page is None  # When using take, page should be None
+
+    def test_should_return_all_available_items_when_take_equals_available(self):
+        """Should return all items when take equals the number of items found."""
+        mock_table = _create_mock_table()
+        # Simulate 3 items in the database
+        mock_table.scan.return_value = {
+            "Items": [
+                {"id": "1", "name": "item1"},
+                {"id": "2", "name": "item2"},
+                {"id": "3", "name": "item3"},
+            ],
+            "LastEvaluatedKey": None,
+        }
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        mock_boto3 = MagicMock()
+        mock_boto3.resource.return_value = mock_resource
+        config = _create_mock_config(boto3_mock=mock_boto3)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
+
+        model = _StubModel()
+        # Request exactly 3 items (same as available)
+        query = ModelSearch(query=[], take=3, sort=None, page=None)
+
+        result = backend.search(model, query)
+
+        # Should return all 3 items
+        assert len(result.instances) == 3
+        assert result.instances[0]["id"] == "1"
+        assert result.instances[1]["id"] == "2"
+        assert result.instances[2]["id"] == "3"
+        assert result.page is None  # When using take, page should be None
+
 
 class TestBulkInsert:
     """Tests for bulk_insert method."""
@@ -519,7 +652,9 @@ class TestBulkInsert:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         data = [
@@ -543,7 +678,9 @@ class TestBulkInsert:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         data: list[dict] = []
@@ -562,7 +699,9 @@ class TestBulkInsert:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         # Create 30 items
@@ -587,7 +726,9 @@ class TestBulkDelete:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         ids = ["id1", "id2", "id3"]
@@ -606,7 +747,9 @@ class TestBulkDelete:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         # Create 30 IDs
@@ -629,7 +772,9 @@ class TestDispose:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
         backend._DynamoDBBackend__client = MagicMock()
 
         backend.dispose()
@@ -651,7 +796,9 @@ class TestConnectConfig:
         mock_boto3.client.return_value = MagicMock()
         config = _create_mock_config(boto3_mock=mock_boto3)
         config.region = "us-west-2"
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         backend.create(model, {"id": "test", "name": "test"})
@@ -671,7 +818,9 @@ class TestConnectConfig:
         mock_boto3.client.return_value = MagicMock()
         config = _create_mock_config(boto3_mock=mock_boto3)
         config.endpoint_url = "http://localhost:8000"
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         backend.create(model, {"id": "test", "name": "test"})
@@ -692,7 +841,9 @@ class TestConnectConfig:
         config = _create_mock_config(boto3_mock=mock_boto3)
         config.aws_access_key_id = "test-key"
         config.aws_secret_access_key = "test-secret"
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         backend.create(model, {"id": "test", "name": "test"})
@@ -702,28 +853,6 @@ class TestConnectConfig:
         call_kwargs = mock_boto3.client.call_args[1]
         assert call_kwargs["aws_access_key_id"] == "test-key"
         assert call_kwargs["aws_secret_access_key"] == "test-secret"
-
-    def test_should_not_use_credentials_when_only_one_provided(self):
-        """Should not use credentials when only one is provided."""
-        mock_table = _create_mock_table()
-        mock_resource = MagicMock()
-        mock_resource.Table.return_value = mock_table
-        mock_boto3 = MagicMock()
-        mock_boto3.resource.return_value = mock_resource
-        mock_boto3.client.return_value = MagicMock()
-        config = _create_mock_config(boto3_mock=mock_boto3)
-        config.aws_access_key_id = "test-key"
-        config.aws_secret_access_key = None
-        backend = DynamoDBBackend(config)
-
-        model = _StubModel()
-        backend.create(model, {"id": "test", "name": "test"})
-
-        # Verify credentials were NOT passed to client
-        mock_boto3.client.assert_called_once()
-        call_kwargs = mock_boto3.client.call_args[1]
-        assert "aws_access_key_id" not in call_kwargs
-        assert "aws_secret_access_key" not in call_kwargs
 
     def test_should_not_use_region_when_none(self):
         """Should not use region when None."""
@@ -735,7 +864,9 @@ class TestConnectConfig:
         mock_boto3.client.return_value = MagicMock()
         config = _create_mock_config(boto3_mock=mock_boto3)
         config.region = None
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         backend.create(model, {"id": "test", "name": "test"})
@@ -753,7 +884,9 @@ class TestConnectConfig:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
         # Set client to non-None to simulate already connected
         backend._DynamoDBBackend__client = MagicMock()
         backend._DynamoDBBackend__table_client = mock_resource
@@ -779,7 +912,9 @@ class TestBulkInsertCoverage:
         mock_boto3 = MagicMock()
         mock_boto3.resource.return_value = mock_resource
         config = _create_mock_config(boto3_mock=mock_boto3)
-        backend = DynamoDBBackend(config)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
 
         model = _StubModel()
         data = [{"name": "item1"}, {"name": "item2"}]

@@ -8,7 +8,7 @@ from .protocols import (
     SupportedBackend,
 )
 
-name = DataNamespace.root
+name = DataNamespace.root.value
 
 __all__ = [
     "BackendConfig",

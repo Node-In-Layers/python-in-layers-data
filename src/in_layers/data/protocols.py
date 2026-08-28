@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 
 class SupportedBackend(Enum):
@@ -9,7 +9,7 @@ class SupportedBackend(Enum):
 
 
 class MongoBackendConfig(Protocol):
-    type: SupportedBackend
+    type: Literal[SupportedBackend.MongoDB]
     host: str
     port: int | None
     username: str | None
@@ -18,7 +18,7 @@ class MongoBackendConfig(Protocol):
 
 
 class DynamoDBBackendConfig(Protocol):
-    type: SupportedBackend
+    type: Literal[SupportedBackend.DynamoDB]
     region: str | None
     endpoint_url: str | None
     aws_access_key_id: str | None
@@ -40,4 +40,4 @@ class InLayersDataConfig(Protocol):
 
 
 class WithInLayersDataConfig(Protocol):
-    config: InLayersDataConfig
+    in_layers_data: InLayersDataConfig

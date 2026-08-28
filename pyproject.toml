@@ -1,6 +1,6 @@
 [project]
 name = "in-layers-data"
-version = "0.4.0"
+version = "1.0.0"
 description = "A data layer for In Layers Core. (in-layers-core). Part of the Node in Layers ecosystem"
 authors = [
     {name = "Mike Cornwell",email = "mike@mikecornwell.com"}
@@ -15,7 +15,7 @@ dependencies = [
     "httpx (>=0.28.1,<0.29.0)",
     "python-box (>=7,<9)",
     "pydantic (>=2.12.5,<3.0.0)",
-    "in-layers-core (>=0.4.2,<0.5.0)"
+    "in-layers-core (>=1.0.0,<2.0.0)"
 ]
 
 [tool.poetry]
@@ -127,6 +127,7 @@ select = [
 ignore = [
   "E501",  # Let Black handle line length
   "W291",  # Trailing whitespace (Black fixes this)
+  "PLE1205",
 ]
 
 # Per-file ignore examples (customize as desired):
