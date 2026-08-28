@@ -1,4 +1,4 @@
-"""Step definitions for MongoDB feature tests."""
+"""Step definitions for backend feature tests."""
 
 from __future__ import annotations
 
@@ -6,32 +6,42 @@ import json
 from datetime import datetime as datetime_
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
+from unittest.mock import MagicMock
 
+from box import Box
 from behave import given, then, when
-from in_layers.core.models.libs import model
+from in_layers.core.models.libs import get_model_definition, model
 from in_layers.core.models.protocols import DatastoreValueType, PropertyOptions
 from in_layers.core.models.query import query_builder
+from in_layers.core.models.services import create_in_layers_model
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
 
 from in_layers.data.backends.mongodb.libs import get_collection_name_for_model
 from in_layers.data.backends.mongodb.services import MongoBackend
+from in_layers.data.backends.redis.libs import (
+    get_key_prefix_for_model_definition,
+    get_search_document_prefix,
+    get_search_index_name,
+)
+from in_layers.data.backends.redis.services import RedisBackend
+from in_layers.data.protocols import SupportedBackend
 
 
 # Load environment configuration
 def _load_env() -> dict[str, Any]:
     env_path = Path(__file__).parent.parent.parent / ".env-cucumber.json"
     if not env_path.exists():
-        raise FileNotFoundError("Must have a .env-cucumber.json file")
+        return {}
     with env_path.open() as f:
         env = json.load(f)
-    if "mongoUrl" not in env:
-        raise ValueError("Must have mongoUrl inside the .env-cucumber.json")
     return env
 
 
 DB_NAME = "in-layers-data-mongo-tests"
+REDIS_MODEL_CLASSES = []
 
 
 # Model definitions
@@ -147,6 +157,10 @@ MODELS = {
 }
 
 
+MODEL_CLASSES = [ModelA, ModelB, ModelC]
+REDIS_MODEL_CLASSES = MODEL_CLASSES
+
+
 # Search definitions
 SEARCHES = {
     "DateSpanSearch": lambda: query_builder()
@@ -206,44 +220,109 @@ SEARCHES = {
 }
 
 
-def _cleanout_database(context: Any) -> None:
-    """Clean out the test database."""
+def _get_backend_name(context: Any) -> str:
+    return getattr(context, "backend_name", "mongodb")
+
+
+def _get_redis_url(context: Any) -> str:
+    if getattr(context, "redis_url", None):
+        return context.redis_url
     env = _load_env()
-    client = MongoClient(env["mongoUrl"])
+    redis_url = env.get("redisUrl")
+    if not redis_url:
+        raise ValueError(
+            "Must have redisUrl configured or start a Redis test container"
+        )
+    return redis_url
+
+
+def _get_mongo_url(context: Any) -> str:
+    if getattr(context, "mongo_url", None):
+        return context.mongo_url
+    env = _load_env()
+    mongo_url = env.get("mongoUrl")
+    if not mongo_url:
+        raise ValueError(
+            "Must have mongoUrl configured or start a Mongo test container"
+        )
+    return mongo_url
+
+
+def _create_backend_context() -> Box:
+    return Box(
+        config=Box(
+            system_name="in-layers-data",
+            environment="test",
+        ),
+        log=MagicMock(),
+    )
+
+
+def _cleanout_database(context: Any) -> None:
+    """Clean out the selected test backend."""
+    backend_name = _get_backend_name(context)
+    if backend_name == "redis":
+        import redis  # pragma: no cover # noqa: PLC0415
+
+        client = redis.from_url(_get_redis_url(context), decode_responses=True)
+        for model_cls in REDIS_MODEL_CLASSES:
+            meta = get_model_definition(model_cls)
+            key_prefix = get_key_prefix_for_model_definition(meta)
+            data_keys = client.keys(f"{key_prefix}:*")
+            search_keys = client.keys(f"{get_search_document_prefix(key_prefix)}*")
+            if data_keys:
+                client.delete(*data_keys)
+            if search_keys:
+                client.delete(*search_keys)
+            try:
+                client.execute_command(
+                    "FT.DROPINDEX", get_search_index_name(key_prefix), "DD"
+                )
+            except Exception:
+                pass
+        client.close()
+        return
+
+    client = MongoClient(_get_mongo_url(context))
     db = client[DB_NAME]
-
-    # Get all collection names from models - we only need the model classes, not instances
-    # So we'll get them directly without calling the model_list_func
-    from in_layers.core.models.libs import get_model_definition
-
-    # Get model classes directly
-    model_classes = [ModelA, ModelB, ModelC]
-    for model_cls in model_classes:
+    for model_cls in MODEL_CLASSES:
         meta = get_model_definition(model_cls)
         collection_name = get_collection_name_for_model(meta)
         collection = db[collection_name]
         collection.delete_many({})
-
     client.close()
 
 
 def _setup_backend(context: Any) -> None:
-    """Set up the MongoDB backend."""
-    env = _load_env()
-    mongo_url = env["mongoUrl"]
-    # Parse mongo URL to get config
-    # Simple parsing - assumes mongodb://host:port format
+    """Set up the selected backend."""
+    backend_name = _get_backend_name(context)
+    backend_context = _create_backend_context()
+    if backend_name == "redis":
+        parsed = urlparse(_get_redis_url(context))
+        config = Box(
+            type=SupportedBackend.Redis,
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 6379,
+            username=parsed.username,
+            password=parsed.password,
+            redis_stack=True,
+            redis=None,
+            client=None,
+        )
+        context.backend = RedisBackend(backend_context, config)
+        return
+
+    mongo_url = _get_mongo_url(context)
     url_parts = mongo_url.replace("mongodb://", "").split("/")
     host_port = url_parts[0].split(":")
-
-    class Config:
-        host = host_port[0]
-        port = int(host_port[1]) if len(host_port) > 1 else 27017
-        username = ""
-        password = ""
-        database = DB_NAME
-
-    context.backend = MongoBackend(Config())
+    config = Box(
+        host=host_port[0],
+        port=int(host_port[1]) if len(host_port) > 1 else 27017,
+        username="",
+        password="",
+        database=DB_NAME,
+    )
+    context.backend = MongoBackend(backend_context, config)
 
 
 # Step definitions
@@ -262,37 +341,16 @@ def step_model_list_created(context: Any, model_list: str) -> None:
 
     result = MODELS[model_list](context.backend)
     context.models = {}
-    context.model_classes = {}
-
-    # Create model instances using the backend
     for model_cls in result["models"]:
-        from in_layers.core.models.libs import get_model_definition
-
         meta = get_model_definition(model_cls)
-        context.model_classes[meta.plural_name] = model_cls
-        # Store the model class and backend for later use
-        context.models[meta.plural_name] = {
-            "class": model_cls,
-            "backend": context.backend,
-            "meta": meta,
-        }
+        context.models[meta.plural_name] = create_in_layers_model(
+            model_cls, context.backend
+        )
 
-    # Insert instances
     for instance in result["instances"]:
         instance_dict = instance.model_dump()
-        model_cls = instance.__class__
-        meta = get_model_definition(model_cls)
-        context.backend.create(
-            type(
-                "Model",
-                (),
-                {
-                    "get_model_definition": lambda self: meta,
-                    "get_primary_key_name": lambda self: meta.primary_key,
-                },
-            )(),
-            instance_dict,
-        )
+        model_name = get_model_definition(instance.__class__).plural_name
+        context.models[model_name].create(instance_dict)
 
 
 @when("search named {search_name} is executed on model named {model_name}")
@@ -304,20 +362,7 @@ def step_search_executed(context: Any, search_name: str, model_name: str) -> Non
         raise ValueError(f"Unknown model: {model_name}")
 
     search = SEARCHES[search_name]()
-    model_info = context.models[model_name]
-    meta = model_info["meta"]
-
-    # Create a mock model object for the search
-    mock_model = type(
-        "Model",
-        (),
-        {
-            "get_model_definition": lambda self: meta,
-            "get_primary_key_name": lambda self: meta.primary_key,
-        },
-    )()
-
-    context.result = context.backend.search(mock_model, search)
+    context.result = context.models[model_name].search(search)
 
 
 @then("{count:d} instances are found")
@@ -334,17 +379,4 @@ def step_bulk_delete(context: Any, model_name: str, ids_string: str) -> None:
         raise ValueError(f"Unknown model: {model_name}")
 
     ids = [id.strip() for id in ids_string.split(",")]
-    model_info = context.models[model_name]
-    meta = model_info["meta"]
-
-    # Create a mock model object
-    mock_model = type(
-        "Model",
-        (),
-        {
-            "get_model_definition": lambda self: meta,
-            "get_primary_key_name": lambda self: meta.primary_key,
-        },
-    )()
-
-    context.backend.bulk_delete(mock_model, ids)
+    context.models[model_name].bulk_delete(ids)

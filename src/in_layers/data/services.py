@@ -5,6 +5,7 @@ from in_layers.core.models.protocols import BackendProtocol, ModelDefinition
 
 from .backends.dynamodb.services import DynamoDBBackend
 from .backends.mongodb.services import MongoBackend
+from .backends.redis.services import RedisBackend
 from .protocols import (
     BackendConfig,
     SupportedBackend,
@@ -39,6 +40,13 @@ class InLayersDataServices:
             if unique in self.__backend_by_unique_key:
                 return self.__backend_by_unique_key[unique]
             backend = DynamoDBBackend(self.__context, config)
+            self.__backend_by_unique_key[unique] = backend
+            return backend
+        elif config.type in [SupportedBackend.Redis, SupportedBackend.Redis.value]:
+            unique = RedisBackend.create_unique_connection_string(config)
+            if unique in self.__backend_by_unique_key:
+                return self.__backend_by_unique_key[unique]
+            backend = RedisBackend(self.__context, config)
             self.__backend_by_unique_key[unique] = backend
             return backend
         else:

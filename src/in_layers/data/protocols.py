@@ -6,6 +6,7 @@ from typing import Any, Literal, Protocol
 class SupportedBackend(Enum):
     MongoDB = "mongodb"
     DynamoDB = "dynamodb"
+    Redis = "redis"
 
 
 class MongoBackendConfig(Protocol):
@@ -26,7 +27,18 @@ class DynamoDBBackendConfig(Protocol):
     boto3: Any | None
 
 
-BackendConfig = MongoBackendConfig | DynamoDBBackendConfig
+class RedisBackendConfig(Protocol):
+    type: Literal[SupportedBackend.Redis]
+    host: str
+    port: int | None
+    username: str | None
+    password: str | None
+    redis_stack: bool | None
+    redis: Any | None
+    client: Any | None
+
+
+BackendConfig = MongoBackendConfig | DynamoDBBackendConfig | RedisBackendConfig
 
 
 class DataNamespace(Enum):

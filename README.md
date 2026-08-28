@@ -1,15 +1,13 @@
-# In Layers Data 
-A data layer for the In Layers Core framework. 
+# In Layers Data
+A data layer for the In Layers Core framework.
 
 NOTE: There are no explicit dependencies on any database. To use a specific database you must install it in your own system. These databases are "imported in" as the databases are actually used at runtime.
-
-Compatible with `in-layers-core` `1.x`.
 
 ## How To Use
 1. Install in-layers-data
 1. Set `"in_layers_data"` to the `in_layers_core.models.model_backend` property
 1. Add `in_layers_data` configuration to your config
-1. Install database libraries to use. Example: `pymongo` or `boto3`
+1. Install database libraries to use. Example: `pymongo`, `boto3`, or `redis`
 1. Dispose the data services when your application shuts down so database connections are cleaned up
 
 ### Configuration Example
@@ -27,7 +25,10 @@ def get_base_config():
         ),
         in_layers_data=Box(
             default=Box(
-                type="mongodb"
+                type="redis",
+                host="localhost",
+                port=6379,
+                redis_stack=True,
                 # Connection information here
             ),
             # Optional: Set "domain" or "domain.ModelPluralNames" to a specific database configuration.
@@ -86,6 +87,7 @@ def main():
 ## Databases Supported
 - Mongodb
 - Dynamodb
+- Redis
 
 ## Database Info
 ### Mongo 
@@ -93,6 +95,14 @@ Mongodb requires `pymongo`
 
 ### Dynamodb
 Dynamodb requires `boto3`
+
+### Redis
+Redis requires `redis`. Redis search support is implemented against Redis Stack / RediSearch and expects `redis_stack=True` in backend configuration.
+
+### Feature Tests
+Mongo and Redis feature tests both spin up containers automatically with `testcontainers`, so they do not require long-lived local database instances. Mongo uses a `mongo` image and Redis uses `redis/redis-stack-server`.
+
+If you want to point feature tests at existing local services instead, you can still provide `mongoUrl` and `redisUrl` in `.env-cucumber.json` as overrides.
 
 #### Important
 Dynamodb is very poor at performing search queries. While this is implemented, it is not-recommended for use. Instead use the retrieve.

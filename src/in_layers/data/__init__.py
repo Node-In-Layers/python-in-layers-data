@@ -5,6 +5,7 @@ from .protocols import (
     DynamoDBBackendConfig,
     InLayersDataConfig,
     MongoBackendConfig,
+    RedisBackendConfig,
     SupportedBackend,
 )
 
@@ -15,6 +16,7 @@ __all__ = [
     "DynamoDBBackendConfig",
     "InLayersDataConfig",
     "MongoBackendConfig",
+    "RedisBackendConfig",
     "SupportedBackend",
     "name",
     "services",

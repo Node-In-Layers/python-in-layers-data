@@ -50,6 +50,22 @@ class _StubDynamoBackend:
         self.was_disposed = True
 
 
+class _StubRedisBackend:
+    """Simple backend stub for Redis."""
+
+    def __init__(self, context, config):
+        self.context = context
+        self.config = config
+        self.was_disposed = False
+
+    @staticmethod
+    def create_unique_connection_string(config):
+        return f"redis://{config.host}:{config.port}|stack={config.redis_stack}"
+
+    def dispose(self):
+        self.was_disposed = True
+
+
 class _StubFailingMongoBackend(_StubMongoBackend):
     def dispose(self):
         raise RuntimeError("boom")
@@ -77,6 +93,19 @@ def _create_dynamo_config(region: str):
     )
 
 
+def _create_redis_config(host: str, port: int = 6379):
+    return Box(
+        type=SupportedBackend.Redis,
+        host=host,
+        port=port,
+        username=None,
+        password=None,
+        redis_stack=True,
+        redis=None,
+        client=None,
+    )
+
+
 def _create_context(default_backend, model_to_backend=None):
     return Box(
         config=Box(
@@ -97,6 +126,7 @@ class TestGetModelBackend:
     ):
         monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
+        monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
 
         shared_backend = _create_mongo_config("shared-host")
         context = _create_context(
@@ -119,6 +149,7 @@ class TestGetModelBackend:
     ):
         monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
+        monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
 
         default_backend = _create_mongo_config("default-host")
         domain_backend = _create_dynamo_config("us-east-1")
@@ -146,6 +177,33 @@ class TestGetModelBackend:
         assert domain_actual.config.region == "us-east-1"
         assert default_actual.config.host == "default-host"
 
+    def test_should_support_redis_for_default_and_model_specific_routing(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
+        monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
+        monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
+
+        default_backend = _create_redis_config("redis-default")
+        model_backend = _create_redis_config("redis-model")
+        context = _create_context(
+            default_backend=default_backend,
+            model_to_backend={
+                "billing.RedisCaches": model_backend,
+            },
+        )
+        instance = data_services.create(context)
+
+        default_actual = instance.get_model_backend(
+            _StubModelDefinition("users", "Users")
+        )
+        model_actual = instance.get_model_backend(
+            _StubModelDefinition("billing", "RedisCaches")
+        )
+
+        assert default_actual.config.host == "redis-default"
+        assert model_actual.config.host == "redis-model"
+
 
 class TestDispose:
     """Tests for dispose()."""
@@ -153,6 +211,7 @@ class TestDispose:
     def test_should_allow_dispose_before_backend_initialization(self, monkeypatch):
         monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
+        monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
 
         context = _create_context(default_backend=_create_mongo_config("default-host"))
         instance = data_services.create(context)
@@ -165,6 +224,7 @@ class TestDispose:
     def test_should_log_warning_when_backend_dispose_fails(self, monkeypatch):
         monkeypatch.setattr(data_services, "MongoBackend", _StubFailingMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
+        monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
 
         context = _create_context(default_backend=_create_mongo_config("default-host"))
         logger = MagicMock()

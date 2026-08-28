@@ -1,6 +1,6 @@
 [project]
 name = "in-layers-data"
-version = "1.0.0"
+version = "1.1.0"
 description = "A data layer for In Layers Core. (in-layers-core). Part of the Node in Layers ecosystem"
 authors = [
     {name = "Mike Cornwell",email = "mike@mikecornwell.com"}
@@ -46,7 +46,9 @@ dev = [
     "twine (>=6.2.0,<7.0.0)",
     "pymongo (>=4.15.5,<5.0.0)",
     "behave>=1.2.6",
-    "boto3 (>=1.42.13,<2.0.0)"
+    "boto3 (>=1.42.13,<2.0.0)",
+    "redis (>=8.1.0,<9.0.0)",
+    "testcontainers (>=4.15.0,<5.0.0)"
 ]
 
 [tool.poetry.dependencies]
