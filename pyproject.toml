@@ -1,6 +1,6 @@
 [project]
 name = "in-layers-data"
-version = "1.1.0"
+version = "1.1.1"
 description = "A data layer for In Layers Core. (in-layers-core). Part of the Node in Layers ecosystem"
 authors = [
     {name = "Mike Cornwell",email = "mike@mikecornwell.com"}
@@ -10,7 +10,7 @@ readme = "README.md"
 homepage = "https://github.com/node-in-layers/python-in-layers-data"  
 repository = "https://github.com/node-in-layers/python-in-layers-data"
 keywords = ["layers", "python", "in-layers", "node", "domains", "data", "models", "orm"]
-requires-python = ">=3.13,<4.0"
+requires-python = ">=3.11,<4.0"
 dependencies = [
     "httpx (>=0.28.1,<0.29.0)",
     "python-box (>=7,<9)",
@@ -52,7 +52,7 @@ dev = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.13,<4.0"
+python = ">=3.11,<4.0"
 python-box = ">=7,<9"
 httpx = ">=0.28.1,<0.29.0"
 
