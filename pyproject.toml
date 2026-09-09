@@ -1,6 +1,6 @@
 [project]
 name = "in-layers-data"
-version = "1.1.1"
+version = "1.2.0"
 description = "A data layer for In Layers Core. (in-layers-core). Part of the Node in Layers ecosystem"
 authors = [
     {name = "Mike Cornwell",email = "mike@mikecornwell.com"}

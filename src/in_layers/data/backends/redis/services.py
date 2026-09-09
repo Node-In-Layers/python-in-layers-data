@@ -274,6 +274,20 @@ class RedisBackend:
         result = from_redis_search_response(response)
         return Box(instances=result.instances, page=query.page)
 
+    def count(self, model: InLayersModel) -> int:
+        self.__ensure_connected()
+
+        key_prefix = get_key_prefix_for_model(model)
+        scan_iter = getattr(self.__client, "scan_iter", None)
+        if callable(scan_iter):
+            return sum(1 for _ in scan_iter(match=f"{key_prefix}:*"))
+
+        keys = getattr(self.__client, "keys", None)
+        if callable(keys):
+            return len(keys(f"{key_prefix}:*"))
+
+        raise ValueError("Redis client must expose scan_iter() or keys() for count()")
+
     def bulk_insert(self, model: InLayersModel, data: list[Mapping]) -> None:
         self.__ensure_connected()
         if len(data) < 1:

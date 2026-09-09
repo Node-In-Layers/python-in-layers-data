@@ -7,6 +7,7 @@ class SupportedBackend(Enum):
     MongoDB = "mongodb"
     DynamoDB = "dynamodb"
     Redis = "redis"
+    Json = "json"
 
 
 class MongoBackendConfig(Protocol):
@@ -38,7 +39,18 @@ class RedisBackendConfig(Protocol):
     client: Any | None
 
 
-BackendConfig = MongoBackendConfig | DynamoDBBackendConfig | RedisBackendConfig
+class JsonBackendConfig(Protocol):
+    type: Literal[SupportedBackend.Json]
+    file_path: str
+    directory_mode: bool | None
+    write_buffer_ms: int | None
+    fs: Any | None
+    get_collection_name_for_model: Any | None
+
+
+BackendConfig = (
+    MongoBackendConfig | DynamoDBBackendConfig | RedisBackendConfig | JsonBackendConfig
+)
 
 
 class DataNamespace(Enum):

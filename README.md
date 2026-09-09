@@ -31,6 +31,13 @@ def get_base_config():
                 redis_stack=True,
                 # Connection information here
             ),
+            # Example JSON backend:
+            # default=Box(
+            #     type="json",
+            #     file_path="./tmp/dev-database.json",
+            #     directory_mode=False,
+            #     write_buffer_ms=10,
+            # ),
             # Optional: Set "domain" or "domain.ModelPluralNames" to a specific database configuration.
             # model_to_backend=Box(
             #     "domain.ModelPluralNames"=Box(
@@ -88,6 +95,7 @@ def main():
 - Mongodb
 - Dynamodb
 - Redis
+- Json
 
 ## Database Info
 ### Mongo 
@@ -98,6 +106,25 @@ Dynamodb requires `boto3`
 
 ### Redis
 Redis requires `redis`. Redis search support is implemented against Redis Stack / RediSearch and expects `redis_stack=True` in backend configuration.
+
+### Json
+Json uses the Python standard library only, so it does not require an additional database client package.
+
+Supported JSON backend config:
+
+```python
+default=Box(
+    type="json",
+    file_path="./tmp/dev-database.json",
+    directory_mode=False,
+    write_buffer_ms=10,
+)
+```
+
+- `file_path` points to a single JSON file, or to a directory root when `directory_mode=True`
+- `directory_mode=True` stores one JSON file per model collection
+- writes are buffered in memory and flushed on read/dispose
+- shutdown should still call `system.services["in_layers_data"].dispose()` so pending writes are persisted
 
 ### Feature Tests
 Mongo and Redis feature tests both spin up containers automatically with `testcontainers`, so they do not require long-lived local database instances. Mongo uses a `mongo` image and Redis uses `redis/redis-stack-server`.

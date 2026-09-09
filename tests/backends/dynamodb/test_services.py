@@ -639,6 +639,29 @@ class TestSearch:
         assert result.page is None  # When using take, page should be None
 
 
+class TestCount:
+    """Tests for count method."""
+
+    def test_should_accumulate_count_across_scan_pages(self):
+        mock_table = _create_mock_table()
+        mock_table.scan.side_effect = [
+            {"Count": 2, "LastEvaluatedKey": {"id": "next"}},
+            {"Count": 1, "LastEvaluatedKey": None},
+        ]
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        mock_boto3 = MagicMock()
+        mock_boto3.resource.return_value = mock_resource
+        config = _create_mock_config(boto3_mock=mock_boto3)
+        context = MagicMock()
+        context.environment = "test"
+        backend = DynamoDBBackend(context, config)
+
+        actual = backend.count(_StubModel())
+
+        assert actual == 3
+
+
 class TestBulkInsert:
     """Tests for bulk_insert method."""
 

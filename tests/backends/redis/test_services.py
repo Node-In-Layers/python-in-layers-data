@@ -108,6 +108,12 @@ class _FakeRedisClient:
     def pipeline(self):
         return _FakePipeline(self)
 
+    def scan_iter(self, match: str):
+        prefix = match[:-1] if match.endswith("*") else match
+        for key in sorted(self.values):
+            if key.startswith(prefix):
+                yield key
+
     def close(self):
         self.closed = True
 
@@ -247,6 +253,26 @@ class TestSearch:
             ValueError, match="Redis Stack search is required for the Redis backend"
         ):
             backend.search(model_instance, query_builder().compile())
+
+
+class TestCount:
+    """Tests for count method."""
+
+    def test_should_count_model_records_by_key_prefix(self):
+        client = _FakeRedisClient()
+        backend = RedisBackend(_create_context(), _create_config(client=client))
+        model_instance = _create_model()
+        backend.bulk_insert(
+            model_instance,
+            [
+                {"id": "a", "name": "Alpha", "age": 10, "active": True},
+                {"id": "b", "name": "Beta", "age": 11, "active": False},
+            ],
+        )
+
+        actual = backend.count(model_instance)
+
+        assert actual == 2
 
 
 class TestBulkOperations:

@@ -297,6 +297,30 @@ class DynamoDBBackend:
 
         return Box(instances=result["instances"], page=result["page"])
 
+    def count(self, model: InLayersModel) -> int:
+        """Count items in the model table."""
+        self.__ensure_connected()
+
+        table_name = get_table_name_for_model(
+            self.__context.config.environment, model.get_model_definition()
+        )
+        table = self.__table_client.Table(table_name)
+
+        scan_kwargs: dict[str, Any] = {"Select": "COUNT"}
+        total_count = 0
+        while True:
+            try:
+                response = table.scan(**scan_kwargs)
+            except ClientError as e:
+                if _is_resource_not_found(e):
+                    return 0
+                raise
+            total_count += int(response.get("Count", 0))
+            last_evaluated_key = response.get("LastEvaluatedKey")
+            if last_evaluated_key is None:
+                return total_count
+            scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+
     def _do_search_until_threshold_or_no_last_evaluated_key(
         self,
         table: Any,

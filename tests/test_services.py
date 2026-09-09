@@ -66,6 +66,22 @@ class _StubRedisBackend:
         self.was_disposed = True
 
 
+class _StubJsonBackend:
+    """Simple backend stub for JSON."""
+
+    def __init__(self, context, config):
+        self.context = context
+        self.config = config
+        self.was_disposed = False
+
+    @staticmethod
+    def create_unique_connection_string(config):
+        return f"json://{config.file_path}|directory={config.directory_mode}"
+
+    def dispose(self):
+        self.was_disposed = True
+
+
 class _StubFailingMongoBackend(_StubMongoBackend):
     def dispose(self):
         raise RuntimeError("boom")
@@ -106,6 +122,17 @@ def _create_redis_config(host: str, port: int = 6379):
     )
 
 
+def _create_json_config(file_path: str, directory_mode: bool = False):
+    return Box(
+        type=SupportedBackend.Json,
+        file_path=file_path,
+        directory_mode=directory_mode,
+        write_buffer_ms=10,
+        fs=None,
+        get_collection_name_for_model=None,
+    )
+
+
 def _create_context(default_backend, model_to_backend=None):
     return Box(
         config=Box(
@@ -127,6 +154,7 @@ class TestGetModelBackend:
         monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
         monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
+        monkeypatch.setattr(data_services, "JsonBackend", _StubJsonBackend)
 
         shared_backend = _create_mongo_config("shared-host")
         context = _create_context(
@@ -150,6 +178,7 @@ class TestGetModelBackend:
         monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
         monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
+        monkeypatch.setattr(data_services, "JsonBackend", _StubJsonBackend)
 
         default_backend = _create_mongo_config("default-host")
         domain_backend = _create_dynamo_config("us-east-1")
@@ -183,6 +212,7 @@ class TestGetModelBackend:
         monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
         monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
+        monkeypatch.setattr(data_services, "JsonBackend", _StubJsonBackend)
 
         default_backend = _create_redis_config("redis-default")
         model_backend = _create_redis_config("redis-model")
@@ -204,6 +234,28 @@ class TestGetModelBackend:
         assert default_actual.config.host == "redis-default"
         assert model_actual.config.host == "redis-model"
 
+    def test_should_support_json_backend_routing_and_reuse(self, monkeypatch):
+        monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
+        monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
+        monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
+        monkeypatch.setattr(data_services, "JsonBackend", _StubJsonBackend)
+
+        shared_backend = _create_json_config("/tmp/shared.json")
+        context = _create_context(
+            default_backend=shared_backend,
+            model_to_backend={"billing.Invoices": shared_backend},
+        )
+        instance = data_services.create(context)
+
+        default_actual = instance.get_model_backend(
+            _StubModelDefinition("users", "Users")
+        )
+        model_actual = instance.get_model_backend(
+            _StubModelDefinition("billing", "Invoices")
+        )
+
+        assert default_actual is model_actual
+
 
 class TestDispose:
     """Tests for dispose()."""
@@ -212,6 +264,7 @@ class TestDispose:
         monkeypatch.setattr(data_services, "MongoBackend", _StubMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
         monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
+        monkeypatch.setattr(data_services, "JsonBackend", _StubJsonBackend)
 
         context = _create_context(default_backend=_create_mongo_config("default-host"))
         instance = data_services.create(context)
@@ -225,6 +278,7 @@ class TestDispose:
         monkeypatch.setattr(data_services, "MongoBackend", _StubFailingMongoBackend)
         monkeypatch.setattr(data_services, "DynamoDBBackend", _StubDynamoBackend)
         monkeypatch.setattr(data_services, "RedisBackend", _StubRedisBackend)
+        monkeypatch.setattr(data_services, "JsonBackend", _StubJsonBackend)
 
         context = _create_context(default_backend=_create_mongo_config("default-host"))
         logger = MagicMock()

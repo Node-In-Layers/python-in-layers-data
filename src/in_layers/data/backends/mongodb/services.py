@@ -201,6 +201,15 @@ class MongoBackend:
 
         return Box(instances=instances, page=query.page)
 
+    def count(self, model: InLayersModel) -> int:
+        """Count documents in the model collection."""
+        self.__ensure_connected()
+
+        collection_name = get_collection_name_for_model(model.get_model_definition())
+        database = self.__get_database()
+        collection = database[collection_name]
+        return int(collection.count_documents({}))
+
     def bulk_insert(self, model: InLayersModel, data: list[Mapping]) -> None:
         """Bulk insert documents."""
         from pymongo.operations import UpdateOne  # noqa: PLC0415

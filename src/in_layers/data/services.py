@@ -4,6 +4,7 @@ from in_layers.core import create_error_object
 from in_layers.core.models.protocols import BackendProtocol, ModelDefinition
 
 from .backends.dynamodb.services import DynamoDBBackend
+from .backends.json.services import JsonBackend
 from .backends.mongodb.services import MongoBackend
 from .backends.redis.services import RedisBackend
 from .protocols import (
@@ -24,7 +25,9 @@ class InLayersDataServices:
         self.__backend_by_unique_key = {}
         self.__backends = None
 
-    def __initialize_backend(self, config: BackendConfig) -> BackendProtocol:
+    def __initialize_backend(  # noqa: PLR0911
+        self, config: BackendConfig
+    ) -> BackendProtocol:
         if config.type in [SupportedBackend.MongoDB, SupportedBackend.MongoDB.value]:
             unique = MongoBackend.create_unique_connection_string(config)
             if unique in self.__backend_by_unique_key:
@@ -47,6 +50,13 @@ class InLayersDataServices:
             if unique in self.__backend_by_unique_key:
                 return self.__backend_by_unique_key[unique]
             backend = RedisBackend(self.__context, config)
+            self.__backend_by_unique_key[unique] = backend
+            return backend
+        elif config.type in [SupportedBackend.Json, SupportedBackend.Json.value]:
+            unique = JsonBackend.create_unique_connection_string(config)
+            if unique in self.__backend_by_unique_key:
+                return self.__backend_by_unique_key[unique]
+            backend = JsonBackend(self.__context, config)
             self.__backend_by_unique_key[unique] = backend
             return backend
         else:
