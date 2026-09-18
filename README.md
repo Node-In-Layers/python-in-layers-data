@@ -125,6 +125,12 @@ default=Box(
 - `directory_mode=True` stores one JSON file per model collection
 - writes are buffered in memory and flushed on read/dispose
 - shutdown should still call `system.services["in_layers_data"].dispose()` so pending writes are persisted
+- TTL is model-scoped, not backend-wide. To enable expiry for a model, declare
+  `ttl_property_name` on the `@model(...)` decorator in `in-layers-core`, for
+  example `@model(..., ttl_property_name="ttl")`.
+- When `ttl_property_name` is set, the JSON backend automatically deletes
+  expired records for that model. TTL values should be integer Unix timestamps
+  in minutes.
 
 ### Feature Tests
 Mongo and Redis feature tests both spin up containers automatically with `testcontainers`, so they do not require long-lived local database instances. Mongo uses a `mongo` image and Redis uses `redis/redis-stack-server`.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from threading import RLock, Timer
 from typing import Any
@@ -25,6 +26,8 @@ from in_layers.data.protocols import JsonBackendConfig
 from .libs import (
     JsonFilesystem,
     get_collection_name_for_model,
+    get_record_expiry_timestamp,
+    is_record_expired,
     load_collection_from_directory,
     load_database_from_file,
     save_collection_to_directory,
@@ -54,6 +57,9 @@ class JsonBackend:
         self.__pending_database_ops: list[PendingOperation] = []
         self.__pending_collection_ops: dict[str, list[PendingOperation]] = {}
         self.__flush_timer: Timer | None = None
+        self.__expiry_timer: Timer | None = None
+        self.__is_flushing_pending_writes = False
+        self.__ttl_property_name_by_collection_name: dict[str, str | None] = {}
 
     @staticmethod
     def create_unique_connection_string(config: JsonBackendConfig) -> str:
@@ -75,6 +81,12 @@ class JsonBackend:
 
     def __write_buffer_ms(self) -> int:
         return int(self.__get_config_value("write_buffer_ms", 10) or 0)
+
+    def __current_time_seconds(self) -> float:
+        return time.time()
+
+    def __get_ttl_property_name_for_model(self, model: InLayersModel) -> str | None:
+        return model.get_model_definition().ttl_property_name
 
     def __get_collection_name_for_model(self, model: InLayersModel) -> str:
         return self.__get_collection_name(model)
@@ -134,6 +146,10 @@ class JsonBackend:
     def __get_collection(self, model: InLayersModel) -> dict[str, dict[str, Any]]:
         self.__ensure_initialized(model)
         collection_name = self.__get_collection_name_for_model(model)
+        self.__ttl_property_name_by_collection_name[collection_name] = (
+            self.__get_ttl_property_name_for_model(model)
+        )
+        self.__sync_ttl_state_locked()
         return self.__get_collection_store(collection_name)
 
     def __record_key(self, primary_key: PrimaryKeyType) -> str:
@@ -175,6 +191,71 @@ class JsonBackend:
             return
         raise ValueError(f"Unknown operation type: {operation_type}")
 
+    def __delete_record_keys_from_collection_locked(
+        self, collection_name: str, record_keys: list[str]
+    ) -> None:
+        if len(record_keys) < 1:
+            return
+        collection = self.__get_collection_store(collection_name)
+        for record_key in record_keys:
+            self.__apply_delete(collection, record_key)
+        operation: PendingOperation
+        if len(record_keys) == 1:
+            operation = ("delete", record_keys[0])
+        else:
+            operation = ("bulk_delete", record_keys)
+        if self.__use_directory_mode():
+            self.__pending_collection_ops.setdefault(collection_name, []).append(
+                operation
+            )
+            self.__dirty_collections.add(collection_name)
+        else:
+            self.__pending_database_ops.append(
+                (operation[0], (collection_name, operation[1]))
+            )
+            self.__dirty_database = True
+        if self.__is_flushing_pending_writes is False:
+            self.__schedule_flush_locked()
+
+    def __prune_expired_records_locked(self) -> None:
+        now_seconds = self.__current_time_seconds()
+        for (
+            collection_name,
+            ttl_property_name,
+        ) in self.__ttl_property_name_by_collection_name.items():
+            if ttl_property_name is None or ttl_property_name == "":
+                continue
+            collection = self.__get_collection_store(collection_name)
+            expired_record_keys = [
+                record_key
+                for record_key, record in collection.items()
+                if is_record_expired(
+                    record,
+                    ttl_property_name,
+                    current_time_seconds=now_seconds,
+                )
+            ]
+            self.__delete_record_keys_from_collection_locked(
+                collection_name,
+                expired_record_keys,
+            )
+
+    def __get_next_expiry_timestamp_locked(self) -> float | None:
+        expiry_timestamps = [
+            expiry_timestamp
+            for collection_name, ttl_property_name in self.__ttl_property_name_by_collection_name.items()
+            if ttl_property_name is not None and ttl_property_name != ""
+            for collection in [self.__get_collection_store(collection_name)]
+            for record in collection.values()
+            for expiry_timestamp in [
+                get_record_expiry_timestamp(record, ttl_property_name)
+            ]
+            if expiry_timestamp is not None
+        ]
+        if len(expiry_timestamps) < 1:
+            return None
+        return min(expiry_timestamps)
+
     def __schedule_flush_locked(self) -> None:
         if self.__flush_timer is not None:
             return
@@ -197,6 +278,33 @@ class JsonBackend:
             return
         self.__flush_timer.cancel()
         self.__flush_timer = None
+
+    def __refresh_expiry_timer_locked(self) -> None:
+        self.__cancel_expiry_timer_locked()
+        next_expiry_timestamp = self.__get_next_expiry_timestamp_locked()
+        if next_expiry_timestamp is None:
+            return
+        delay_seconds = max(0.0, next_expiry_timestamp - self.__current_time_seconds())
+        timer = Timer(delay_seconds, self.__expire_from_timer)
+        timer.daemon = True
+        self.__expiry_timer = timer
+        timer.start()
+
+    def __expire_from_timer(self) -> None:
+        with self.__lock:
+            self.__expiry_timer = None
+            self.__sync_ttl_state_locked()
+            self.__flush_pending_writes_locked()
+
+    def __cancel_expiry_timer_locked(self) -> None:
+        if self.__expiry_timer is None:
+            return
+        self.__expiry_timer.cancel()
+        self.__expiry_timer = None
+
+    def __sync_ttl_state_locked(self) -> None:
+        self.__prune_expired_records_locked()
+        self.__refresh_expiry_timer_locked()
 
     def __serialize_collection(
         self, collection: Mapping[str, Mapping[str, Any]], collection_name: str
@@ -292,10 +400,16 @@ class JsonBackend:
 
     def __flush_pending_writes_locked(self) -> None:
         self.__cancel_flush_timer_locked()
-        if self.__use_directory_mode():
-            self.__flush_directory_collections_locked()
-            return
-        self.__flush_database_locked()
+        self.__is_flushing_pending_writes = True
+        try:
+            self.__prune_expired_records_locked()
+            if self.__use_directory_mode():
+                self.__flush_directory_collections_locked()
+            else:
+                self.__flush_database_locked()
+        finally:
+            self.__is_flushing_pending_writes = False
+        self.__refresh_expiry_timer_locked()
 
     def __enqueue_database_operation(
         self, collection_name: str, operation: PendingOperation
@@ -340,10 +454,12 @@ class JsonBackend:
             record_key = self.__record_key(primary_key)
             self.__apply_upsert(collection, record_key, payload)
             self.__queue_operation(collection_name, ("upsert", (record_key, payload)))
+            self.__sync_ttl_state_locked()
             return dict(payload)
 
     def retrieve(self, model: InLayersModel, id: PrimaryKeyType) -> Mapping | None:
         with self.__lock:
+            self.__get_collection(model)
             self.__flush_pending_writes_locked()
             collection = self.__get_collection(model)
             record = collection.get(self.__record_key(id))
@@ -367,6 +483,7 @@ class JsonBackend:
             payload[model.get_primary_key_name()] = id
             self.__apply_upsert(collection, record_key, payload)
             self.__queue_operation(collection_name, ("upsert", (record_key, payload)))
+            self.__sync_ttl_state_locked()
             return dict(payload)
 
     def delete(self, model: InLayersModel, id: PrimaryKeyType) -> None:
@@ -376,9 +493,11 @@ class JsonBackend:
             record_key = self.__record_key(id)
             self.__apply_delete(collection, record_key)
             self.__queue_operation(collection_name, ("delete", record_key))
+            self.__refresh_expiry_timer_locked()
 
     def search(self, model: InLayersModel, query: ModelSearch) -> ModelSearchResult:
         with self.__lock:
+            self.__get_collection(model)
             self.__flush_pending_writes_locked()
             collection = self.__get_collection(model)
             records = list(collection.values())
@@ -393,6 +512,7 @@ class JsonBackend:
 
     def count(self, model: InLayersModel) -> int:
         with self.__lock:
+            self.__get_collection(model)
             self.__flush_pending_writes_locked()
             collection = self.__get_collection(model)
             return len(collection)
@@ -415,6 +535,7 @@ class JsonBackend:
                 self.__apply_upsert(collection, record_key, payload)
                 inserts.append((record_key, payload))
             self.__queue_operation(collection_name, ("bulk_upsert", inserts))
+            self.__sync_ttl_state_locked()
 
     def bulk_delete(self, model: InLayersModel, ids: list[PrimaryKeyType]) -> None:
         with self.__lock:
@@ -426,10 +547,13 @@ class JsonBackend:
             for record_key in record_keys:
                 self.__apply_delete(collection, record_key)
             self.__queue_operation(collection_name, ("bulk_delete", record_keys))
+            self.__refresh_expiry_timer_locked()
 
     def dispose(self) -> None:
         with self.__lock:
             self.__flush_pending_writes_locked()
+            self.__cancel_expiry_timer_locked()
             self.__collections = {}
             self.__loaded_database = False
             self.__loaded_collections = set()
+            self.__ttl_property_name_by_collection_name = {}

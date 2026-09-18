@@ -8,7 +8,7 @@ import re
 import secrets
 import time
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -16,6 +16,7 @@ from typing import Any, Protocol, TypeVar
 from in_layers.core.models.protocols import InLayersModel, ModelDefinition
 
 T = TypeVar("T")
+_SECONDS_PER_MINUTE = 60
 _CAMEL_CASE_RE = re.compile(r"(?<!^)(?=[A-Z])")
 _ALPHA_NUM_BOUNDARY_RE = re.compile(r"([a-zA-Z])([0-9])")
 _NUM_ALPHA_BOUNDARY_RE = re.compile(r"([0-9])([a-zA-Z])")
@@ -81,6 +82,43 @@ def get_collection_name_for_model_definition(model_definition: ModelDefinition) 
 
 def get_collection_name_for_model(model: InLayersModel) -> str:
     return get_collection_name_for_model_definition(model.get_model_definition())
+
+
+def to_unix_timestamp(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) * _SECONDS_PER_MINUTE
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized == "":
+            return None
+        with suppress(ValueError):
+            return float(int(normalized)) * _SECONDS_PER_MINUTE
+    return None
+
+
+def get_record_expiry_timestamp(
+    record: dict[str, Any] | Mapping[str, Any], ttl_property_name: str | None
+) -> float | None:
+    if ttl_property_name is None or ttl_property_name == "":
+        return None
+    if ttl_property_name not in record:
+        return None
+    return to_unix_timestamp(record.get(ttl_property_name))
+
+
+def is_record_expired(
+    record: dict[str, Any] | Mapping[str, Any],
+    ttl_property_name: str | None,
+    *,
+    current_time_seconds: float | None = None,
+) -> bool:
+    expiry_timestamp = get_record_expiry_timestamp(record, ttl_property_name)
+    if expiry_timestamp is None:
+        return False
+    now_seconds = time.time() if current_time_seconds is None else current_time_seconds
+    return expiry_timestamp <= now_seconds
 
 
 def _is_enoent(error: Exception) -> bool:

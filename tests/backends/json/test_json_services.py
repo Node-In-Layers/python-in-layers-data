@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -14,21 +15,40 @@ from pydantic import BaseModel
 from in_layers.core.models.libs import model
 from in_layers.core.models.query import PropertyOptions, query_builder
 from in_layers.core.models.services import create_in_layers_model
+import in_layers.data.backends.json.services as json_services
 from in_layers.data.backends.json.services import JsonBackend
 from in_layers.data.protocols import SupportedBackend
 
 
-@model(domain="functional-models-orm-json", plural_name="Test1Models")
+@model(
+    domain="functional-models-orm-json",
+    plural_name="Test1Models",
+    ttl_property_name="ttl",
+)
 class JsonTest1Model(BaseModel):
     id: str | None = None
     name: str
     created_at: str | None = None
+    ttl: int | None = None
+    expires_at: int | None = None
 
 
 @model(domain="functional-models-orm-json", plural_name="Test2Models")
 class JsonTest2Model(BaseModel):
     id: str | None = None
     name: str
+    ttl: int | None = None
+
+
+@model(
+    domain="functional-models-orm-json",
+    plural_name="ExpiresAtModels",
+    ttl_property_name="expires_at",
+)
+class JsonExpiresAtModel(BaseModel):
+    id: str | None = None
+    name: str
+    expires_at: int | None = None
 
 
 def _create_context():
@@ -62,6 +82,14 @@ def _create_model_classes(backend: JsonBackend):
     )
 
 
+def _create_expires_at_model(backend: JsonBackend):
+    return create_in_layers_model(JsonExpiresAtModel, backend)
+
+
+def _current_unix_minutes() -> int:
+    return int(time.time() / 60)
+
+
 class _ExplodingReadFs:
     def read_file(self, file_path: str, encoding: str = "utf-8"):  # noqa: ARG002
         raise PermissionError("boom")
@@ -82,6 +110,22 @@ class _ExplodingReadFs:
 
     def unlink(self, file_path: str):  # noqa: ARG002
         return None
+
+
+class _FakeTimer:
+    created_timers: list["_FakeTimer"] = []
+
+    def __init__(self, interval: float, func):
+        self.interval = interval
+        self.func = func
+        self.daemon = False
+        self.cancelled = False
+
+    def start(self):
+        self.created_timers.append(self)
+
+    def cancel(self):
+        self.cancelled = True
 
 
 def test_should_create_and_flush_on_count_in_file_mode(tmp_path):
@@ -207,3 +251,84 @@ def test_should_preserve_datetime_like_strings_in_json_payload(tmp_path):
         actual["functional-models-orm-json-test-1-models"]["a"]["created_at"]
         == created_at
     )
+
+
+def test_should_delete_expired_ttl_records_on_read_and_persist_removal(tmp_path):
+    file_path = tmp_path / "database.json"
+    backend = JsonBackend(
+        _create_context(),
+        _create_config(str(file_path), write_buffer_ms=0),
+    )
+    model, _ = _create_model_classes(backend)
+
+    current_unix_minutes = _current_unix_minutes()
+    model.create({"id": "expired", "name": "Old", "ttl": current_unix_minutes - 1})
+    model.create({"id": "active", "name": "New", "ttl": current_unix_minutes + 1})
+
+    assert model.retrieve("expired") is None
+    assert model.count() == 1
+
+    backend.dispose()
+
+    actual = json.loads(Path(file_path).read_text(encoding="utf-8"))
+    collection = actual["functional-models-orm-json-test-1-models"]
+    assert "expired" not in collection
+    assert collection["active"]["name"] == "New"
+
+
+def test_should_support_custom_ttl_property_name(tmp_path):
+    file_path = tmp_path / "database.json"
+    backend = JsonBackend(
+        _create_context(),
+        _create_config(str(file_path), write_buffer_ms=0),
+    )
+    _, non_ttl_model = _create_model_classes(backend)
+    expires_at_model = _create_expires_at_model(backend)
+
+    current_unix_minutes = _current_unix_minutes()
+    expires_at_model.create(
+        {"id": "expired", "name": "Old", "expires_at": current_unix_minutes - 1}
+    )
+    non_ttl_model.create(
+        {"id": "active", "name": "New", "ttl": current_unix_minutes - 1}
+    )
+
+    assert expires_at_model.retrieve("expired") is None
+    assert non_ttl_model.retrieve("active") is not None
+    assert non_ttl_model.count() == 1
+
+
+def test_should_delete_expired_records_when_ttl_timer_fires(monkeypatch, tmp_path):
+    file_path = tmp_path / "database.json"
+    current_time = {"value": 1_700_000_000.0}
+    _FakeTimer.created_timers = []
+    monkeypatch.setattr(json_services, "Timer", _FakeTimer)
+    monkeypatch.setattr(json_services.time, "time", lambda: current_time["value"])
+
+    backend = JsonBackend(
+        _create_context(),
+        _create_config(str(file_path), write_buffer_ms=0),
+    )
+    model, _ = _create_model_classes(backend)
+
+    model.create(
+        {
+            "id": "a",
+            "name": "Alice",
+            "ttl": int(current_time["value"] / 60) + 1,
+        }
+    )
+
+    assert model.count() == 1
+    assert len(_FakeTimer.created_timers) >= 1
+
+    current_time["value"] += 120
+    _FakeTimer.created_timers[-1].func()
+
+    assert model.retrieve("a") is None
+
+    backend.dispose()
+
+    actual = json.loads(Path(file_path).read_text(encoding="utf-8"))
+    collection = actual["functional-models-orm-json-test-1-models"]
+    assert "a" not in collection
